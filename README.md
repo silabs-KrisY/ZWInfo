@@ -13,7 +13,7 @@ Present functionality is to query the Z-Wave device for version info and print t
 ```
 
 # Credits
-This code was adapted from Dr. ZWave's "BasicOnOff" project.
+This code was adapted from Dr. ZWave's [BasicOnOff project](https://github.com/drzwave/BasicOnOff).
 
 # Contacts
 - Kris Young - kris.young@silabs.com
