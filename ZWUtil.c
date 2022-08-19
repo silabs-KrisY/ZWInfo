@@ -27,7 +27,7 @@ int serial;
 char readBuf[BUF_SIZE];
 char sendBuf[BUF_SIZE];
 
-unsigned char checksum(char *pkt, int len) { /* returns the checksum of PKT */
+unsigned char calc_checksum(char *pkt, int len) { /* returns the checksum of PKT */
     int i;
     int sum=0xff;
     for(i=0;i<len;i++) {
@@ -42,6 +42,7 @@ int GetSerial(char *pkt) { /* Get SerialAPI frame from UART. Returns the length 
     char ack=ACK;
     int searching=true;
     i=0;
+    unsigned char checksum=0xff;
 
     while (searching) {                     // Seach for the SOF is complete when we find the SOF and type fields
         for (j=0; i<1 && j<250; j++) {      // wait up to about 250ms - if waiting for a routed frame this might need to be longer
@@ -69,6 +70,16 @@ int GetSerial(char *pkt) { /* Get SerialAPI frame from UART. Returns the length 
         }
     }
     // TODO add the checksum check here
+    // Add the len and type at the end for checksum purposes and calculate.
+    // Should be zero.
+    pkt[index++] = len;
+    pkt[index++] = type;
+    checksum = calc_checksum(pkt, len+1); //add one for the checksum byte
+    if (checksum != 0) {
+      printf("checksum mismatch on received serial packet! Exiting.\r\n");
+      close(serial);
+      exit(-1);
+    }
     write(serial,&ack,1);   // ACK the frame
     return(len-2);      // remove LEN and TYPE
 } /* GetSerial */
@@ -92,7 +103,7 @@ int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of lengt
     buf[1]=len+2; // add LEN, TYPE
     buf[2]=REQUEST;
     memcpy(&buf[3],pkt,len);
-    buf[len+3]=checksum(&buf[1],len+2);
+    buf[len+3]=calc_checksum(&buf[1],len+2);
 #ifdef DEBUG // tx debug
     printf("Sending");
     for (i=0;i<(len+4); i++) {
