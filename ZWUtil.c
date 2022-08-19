@@ -13,19 +13,69 @@
 #include <time.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <getopt.h>
 #include "ZWave.h"
 
 // RX/TX UART buffer size. Most Z-Wave frames are under 64 bytes.
 #define BUF_SIZE 128
 
-void usage() {
-    printf("\nZWUtil <uart port>\n");
-    printf("ZWUtil will query the Z-Wave SerialAPI node on the specified uart port\n");
-}
+#define OPTSTRING "hvu:"
+
+#define LONG_OPT_VERSION 0
+#define LONG_OPT_INFO 1
+#define LONG_OPT_CMD 2
+#define LONG_OPT_HELP 3
+
+#define OPTIONS \
+  "\n%s\nOPTIONS\n" \
+  " -h    Print this help message.\n" \
+  " -v    Print the software version defined in the application.\n" \
+  " -u <uart port, e.g. /dev/ttyACM0>\n"  \
+  " --cmd <ASCII hex command string> Allows verification/running Z-Wave commands.\n" \
+
+
+static struct option long_options[] = {
+     {"version",    no_argument,       0,  LONG_OPT_VERSION },
+     {"info",       no_argument, 0,  LONG_OPT_INFO },
+     {"cmd",        required_argument, 0,  LONG_OPT_CMD },
+     {"help",       no_argument, 0,  LONG_OPT_HELP },
+     {0,           0,                 0,  0  }};
+
+#define VERSION_MAJ	1u
+#define VERSION_MIN	0u
 
 int serial;
 char readBuf[BUF_SIZE];
 char sendBuf[BUF_SIZE];
+
+char portstring[BUF_SIZE]; //use same buffer size for portstring
+
+static enum app_states {
+  app_state_info,
+  app_state_cmd
+} app_state = app_state_info;
+
+#define MAX_CMD_STRING_LEN  16u
+uint8_t cmd_data[MAX_CMD_STRING_LEN/2]; //half of string length due to ascii hex data in string
+uint8_t cmd_len; //how many bytes in cmd_data
+
+void usage(char* appname) {
+    printf(OPTIONS, appname);
+}
+
+unsigned int toInt(char c) {
+  /* Convert ASCII hex to binary, return -1 if error */
+  if (c >= '0' && c <= '9') {
+    return      c - '0';
+  } else if (c >= 'A' && c <= 'F') {
+    return 10 + c - 'A';
+  } else if (c >= 'a' && c <= 'f') {
+    return 10 + c - 'a';
+  } else {
+    return -1; //error
+  }
+
+}
 
 unsigned char calc_checksum(char *pkt, int len) { /* returns the checksum of PKT */
     int i;
@@ -147,16 +197,75 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
     struct termios Settings;
 
     int ack,len,i,j;
+    int opt;
+    int option_index=0;
+    uint8_t cmd_string_len=0;
+    int8_t upper_nib;
+    int8_t lower_nib;
 
-    if (argc!=2) {
-        usage();
-        return(-1);
+    // Process command line options.
+  while ((opt = getopt_long(argc, argv, OPTSTRING, long_options, &option_index)) != -1) {
+    switch (opt) {
+      // Print help.
+      case 'h':
+      case LONG_OPT_HELP:
+        printf(OPTIONS, argv[0]);
+        exit(EXIT_SUCCESS);
+
+      case 'v':
+      case LONG_OPT_VERSION:
+        printf("%s version %d.%d\n",argv[0],VERSION_MAJ,VERSION_MIN);
+        break;
+
+      case LONG_OPT_INFO:
+        app_state = app_state_info;
+        break;
+
+      case LONG_OPT_CMD:
+        app_state = app_state_cmd;
+
+        /* Send a custom command and print the response */
+        cmd_string_len = strlen(optarg);
+        cmd_len = cmd_string_len/2;
+        if (cmd_string_len > MAX_CMD_STRING_LEN)
+        {
+          printf("String too long in -b argument: string length %zu, max = %d\n",strlen(optarg),MAX_CMD_STRING_LEN);
+          exit(EXIT_FAILURE);
+        }
+
+        for (i=0; i != cmd_len; i++) {
+          /* Convert arg string (e.g. "040101") to binary data */
+          upper_nib = toInt(optarg[2*i]);
+          lower_nib = toInt(optarg[2*i+1]);
+          if (lower_nib < 0 || upper_nib < 0) {
+            /* Problem with conversion - print error and exit */
+            printf("Error! \"%s\" is an invalid ascii hex string. The characters need to be A-F, a-f, or 0-9.\n",optarg);
+            exit(EXIT_FAILURE);
+          } else {
+            cmd_data[i] = (uint8_t) (16*upper_nib) + lower_nib;
+          }
+        }
+        app_state = app_state_cmd;
+        break;
+
+        case 'u':
+        memcpy(portstring, optarg, strlen(optarg));
+        break;
+
+        default:
+        break;
     }
+  }
 
+  if (app_state == app_state_info || app_state == app_state_cmd) {
+    if (strlen(portstring) == 0) {
+      printf("UART port not specified. Must specify UART port with -u\r\n");
+      exit(EXIT_FAILURE);
+    }
     /* setup the UART to 115200, 8 bits, no parity, 2 stop bit. */
-    serial = open(argv[1],O_RDWR | O_NOCTTY | O_NONBLOCK); /* serial plugged into a Linux machine is normally at /dev/ttyACM0 */
+    serial = open(portstring,O_RDWR | O_NOCTTY | O_NONBLOCK); /* serial plugged into a Linux machine is normally at /dev/ttyACM0 */
     if (serial<0) {
-      printf("Error opening %s - %s(%d)\r\n",argv[1], strerror(errno), errno);
+      printf("Error opening %s - %s(%d)\r\n",portstring, strerror(errno), errno);
       exit(-1);
     }
     tcgetattr(serial,&Settings);
@@ -185,8 +294,9 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
         printf("Unable to set serial attributes\r\n");
         return(-2);
     }
-
-    printf("Querying SerialAPI device on %s...\r\n", argv[1]);
+  }
+  if (app_state == app_state_info) {
+    printf("Querying SerialAPI device on %s...\r\n", portstring);
     sendBuf[0]=FUNC_ID_SERIAL_API_GET_INIT_DATA;
     ack=SendSerial(sendBuf,1);
     if (ack!=ACK) {
@@ -237,6 +347,15 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
             readBuf[7] << 8 | readBuf[8]);
         }
     }
+  }// end info
+  else if (app_state == app_state_cmd) {
+    //TODO: Send command here
+    printf("send cmd and receive response. CMD: ");
+    for (i=0;i<cmd_len;i++) {
+      printf("%x ", cmd_data[i]);
+    }
+    printf("\r\n");
+  }
 
     close(serial);
 }   /* Main */
