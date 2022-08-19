@@ -103,7 +103,7 @@ int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of lengt
         tcflush(serialapi_device,TCIFLUSH);  // purge the UART Rx Buffer
         write(serialapi_device,buf,len+4);   // Send the frame to the serialapi_device
         i=0;
-        for (j=0; i<1 && j<10000; j++) {
+        for (j=0; i<1 && j<100000; j++) {
             i=read(serialapi_device,readBuf,1);          // Get the ACK/NAK/CAN
         }
         if (i==1) {
@@ -148,14 +148,23 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
       return(-1);
     }
     tcgetattr(serialapi_device,&Settings);
-    cfsetispeed(&Settings,B115200);
-    cfsetospeed(&Settings,B115200);
+    //cfsetispeed(&Settings,B115200);
+    cfsetspeed(&Settings,B115200);
+
+    // Set raw input (non-canonical) mode.
+    cfmakeraw(&Settings);
+
+    // Ignore modem control lines.
+    Settings.c_cflag |= CLOCAL;
+    // Enable receiver.
+    Settings.c_cflag |= CREAD;
     Settings.c_cflag &= ~PARENB;
     Settings.c_cflag &= ~CSTOPB;
     Settings.c_cflag &= ~CSIZE;
     Settings.c_cflag |= CS8;
     Settings.c_cflag &= ~CRTSCTS;
     Settings.c_iflag &= ~(IXON | IXOFF | IXANY);
+    Settings.c_iflag |= IGNBRK;
     Settings.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
     Settings.c_oflag &= ~OPOST;
     Settings.c_cc[VMIN] = BUF_SIZE;
