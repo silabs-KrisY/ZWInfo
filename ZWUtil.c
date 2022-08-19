@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdbool.h>
+#include <errno.h>
 #include "ZWave.h"
 
 // RX/TX UART buffer size. Most Z-Wave frames are under 64 bytes.
@@ -22,7 +23,7 @@ void usage() {
     printf("ZWUtil will query the Z-Wave SerialAPI node on the specified uart port\n");
 }
 
-int serialapi_device;
+int serial;
 char readBuf[BUF_SIZE];
 char sendBuf[BUF_SIZE];
 
@@ -44,22 +45,22 @@ int GetSerial(char *pkt) { /* Get SerialAPI frame from UART. Returns the length 
 
     while (searching) {                     // Seach for the SOF is complete when we find the SOF and type fields
         for (j=0; i<1 && j<250; j++) {      // wait up to about 250ms - if waiting for a routed frame this might need to be longer
-            i=read(serialapi_device,pkt,1);
+            i=read(serial,pkt,1);
             if (i==1 && readBuf[0]!=SOF) i=0;  // drop anything until SOF
             usleep(1000);                   // Wait 1ms
         }
         if (i!=1) {
             return(-1);   // no frame so just return -1
         }
-        i=read(serialapi_device,pkt,1);                  // LEN (includes LEN and TYPE)
+        i=read(serial,pkt,1);                  // LEN (includes LEN and TYPE)
         len=pkt[0];
-        i=read(serialapi_device,pkt,1);                  // TYPE (must be 00 or 01)
+        i=read(serial,pkt,1);                  // TYPE (must be 00 or 01)
         type=pkt[0];
         if (type<=0x01) searching=false;    // TODO could also qualify that LEN is less than 64?
     }
     i=0; index=0;
     for (j=0; j<1000 && index<(len-1); j++) {
-        i=read(serialapi_device,&pkt[index],len);
+        i=read(serial,&pkt[index],len);
         if (i<1) {                          // Nothing yet
             usleep(100);                    // Wait 100uS
         }
@@ -68,12 +69,12 @@ int GetSerial(char *pkt) { /* Get SerialAPI frame from UART. Returns the length 
         }
     }
     // TODO add the checksum check here
-    write(serialapi_device,&ack,1);   // ACK the frame
+    write(serial,&ack,1);   // ACK the frame
     return(len-2);      // remove LEN and TYPE
 } /* GetSerial */
 
 int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of length LEN after encapsulating */
-    /* Returns ACK/NAK/CAN if the packet was delivered to the serialapi_device, -1 if no response */
+    /* Returns ACK/NAK/CAN if the packet was delivered to the serial, -1 if no response */
     /* if not ACKed, will try a total of 3 times */
     /* SerialAPI format:
      * SOF      =0x01
@@ -100,15 +101,15 @@ int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of lengt
     printf("\n");
 #endif
     for (retry=1;retry<=3;retry++) {    // retry up to 3 times
-        tcflush(serialapi_device,TCIFLUSH);  // purge the UART Rx Buffer
-        write(serialapi_device,buf,len+4);   // Send the frame to the serialapi_device
+        tcflush(serial,TCIFLUSH);  // purge the UART Rx Buffer
+        write(serial,buf,len+4);   // Send the frame to the serial
         i=0;
         for (j=0; i<1 && j<100000; j++) {
-            i=read(serialapi_device,readBuf,1);          // Get the ACK/NAK/CAN
+            i=read(serial,readBuf,1);          // Get the ACK/NAK/CAN
         }
         if (i==1) {
             if (readBuf[0]==ACK) break; // Got the ACK so return
-            write(serialapi_device,&ack,1);          // Got something else so try sending an ACK to clear
+            write(serial,&ack,1);          // Got something else so try sending an ACK to clear
         }
         sleep(2);      // wait a bit and try again
     }
@@ -142,12 +143,12 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
     }
 
     /* setup the UART to 115200, 8 bits, no parity, 2 stop bit. */
-    serialapi_device = open(argv[1],O_RDWR | O_NOCTTY | O_NONBLOCK); /* serialapi_device plugged into a Linux machine is normally at /dev/ttyACM0 */
-    if (serialapi_device<0) {
-      printf("Error opening %s\r\n",argv[1]);
-      return(-1);
+    serial = open(argv[1],O_RDWR | O_NOCTTY | O_NONBLOCK); /* serial plugged into a Linux machine is normally at /dev/ttyACM0 */
+    if (serial<0) {
+      printf("Error opening %s - %s(%d)\r\n",argv[1], strerror(errno), errno);
+      exit(-1);
     }
-    tcgetattr(serialapi_device,&Settings);
+    tcgetattr(serial,&Settings);
     //cfsetispeed(&Settings,B115200);
     cfsetspeed(&Settings,B115200);
 
@@ -169,8 +170,8 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
     Settings.c_oflag &= ~OPOST;
     Settings.c_cc[VMIN] = BUF_SIZE;
     Settings.c_cc[VTIME] = 1; // wait this many 100mSec if no chars are available yet - need to wait for the ACK
-    if (tcsetattr(serialapi_device,TCSANOW,&Settings)!=0) {
-        printf("Unable to set serialapi_device attributes\r\n");
+    if (tcsetattr(serial,TCSANOW,&Settings)!=0) {
+        printf("Unable to set serial attributes\r\n");
         return(-2);
     }
 
@@ -226,5 +227,5 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
         }
     }
 
-    close(serialapi_device);
+    close(serial);
 }   /* Main */
