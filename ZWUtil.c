@@ -19,6 +19,8 @@
 // RX/TX UART buffer size. Most Z-Wave frames are under 64 bytes.
 #define BUF_SIZE 128
 
+#define RETRY_CNT 3 //retry 3 times
+
 #define OPTSTRING "hvu:"
 
 #define LONG_OPT_VERSION 0
@@ -28,9 +30,10 @@
 
 #define OPTIONS \
   "\n%s\nOPTIONS\n" \
-  " -h    Print this help message.\n" \
-  " -v    Print the software version defined in the application.\n" \
+  " -h        Print this help message.\n" \
+  " -v        Print the software version defined in the application.\n" \
   " -u <uart port, e.g. /dev/ttyACM0>\n"  \
+  " --info    Query the SerialAPI device and provide details to the console.\n" \
   " --cmd <ASCII hex command string> Allows verification/running Z-Wave commands.\n" \
 
 
@@ -119,9 +122,8 @@ int GetSerial(char *pkt) { /* Get SerialAPI frame from UART. Returns the length 
             index+=i;
         }
     }
-    // TODO add the checksum check here
-    // Add the len and type at the end for checksum purposes and calculate.
-    // Should be zero.
+    // Add the len and type at the end of the array for checksum calculation
+    // purposes ONLY and calculate. Should be zero if good.
     pkt[index++] = len;
     pkt[index++] = type;
     checksum = calc_checksum(pkt, len+1); //add one for the checksum byte
@@ -146,9 +148,10 @@ int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of lengt
      * CHECKSUM = XOR of all bytes except SOF. Should be 0 if checksum is OK. NAK is sent if checksum fails.
      */
     char buf[BUF_SIZE];
-    int i,j;
+    int i;
     int retry;
     int ack=ACK;
+    int sendStatus;
     buf[0]=SOF;
     buf[1]=len+2; // add LEN, TYPE
     buf[2]=REQUEST;
@@ -161,20 +164,19 @@ int SendSerial(const char *pkt,int len) { /* send SerialAPI command PKT of lengt
     }
     printf("\n");
 #endif
-    for (retry=1;retry<=3;retry++) {    // retry up to 3 times
+    for (retry=0;retry<RETRY_CNT;retry++) {    // retry up to 3 times
         tcflush(serial,TCIFLUSH);  // purge the UART Rx Buffer
         write(serial,buf,len+4);   // Send the frame to the serial
-        i=0;
-        for (j=0; i<1 && j<100000; j++) {
-            i=read(serial,readBuf,1);          // Get the ACK/NAK/CAN
-        }
-        if (i==1) {
-            if (readBuf[0]==ACK) break; // Got the ACK so return
+        sendStatus=0;
+        usleep(10000); // wait 10ms then read the ACK
+        sendStatus = read(serial,readBuf,1);          // Get the ACK/NAK/CAN
+        if (sendStatus==1) {
+            if (readBuf[0]==ACK) break; // Got the ACK so break
             write(serial,&ack,1);          // Got something else so try sending an ACK to clear
         }
         sleep(2);      // wait a bit and try again
     }
-    if (i!=1) {
+    if (sendStatus!=1) {
         printf("UART Timeout\r\n");
         return(-1);
     }
@@ -202,6 +204,7 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
     uint8_t cmd_string_len=0;
     int8_t upper_nib;
     int8_t lower_nib;
+    uint8_t retry_cnt;
 
     // Process command line options.
   while ((opt = getopt_long(argc, argv, OPTSTRING, long_options, &option_index)) != -1) {
@@ -298,7 +301,16 @@ int main(int argc, char *argv[]) { /*****************MAIN*********************/
   if (app_state == app_state_info) {
     printf("Querying SerialAPI device on %s...\r\n", portstring);
     sendBuf[0]=FUNC_ID_SERIAL_API_GET_INIT_DATA;
-    ack=SendSerial(sendBuf,1);
+    retry_cnt = 0;
+    do  {
+      ack=SendSerial(sendBuf,1);
+      #ifdef DEBUG
+      if (ack == NAK) {
+          printf("NAK received - retry #%d\r\n", retry_cnt);
+      }
+      #endif
+    } while (ack == NAK && retry_cnt++ < RETRY_CNT);
+
     if (ack!=ACK) {
         printf("Unable to send Z-Wave SerialAPI command API_GET_INIT_DATA" \
         " (%s)\r\n",statusString(ack));
